@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+librosa
+numpy
+soundfile
+transformers
+python-dotenv
+torch>=2.2.0
+python-multipart
+resampy
