@@ -205,10 +205,18 @@ class WhisperTranscriptionService:
             )
 
             # Create batched inference pipeline
-            self.batched_model = BatchedInferencePipeline(
-                model=self.model,
-                batch_size=self.batch_size
-            )
+            # Note: API changed in faster-whisper >= 1.0.0
+            try:
+                # Try new API (no batch_size parameter)
+                self.batched_model = BatchedInferencePipeline(model=self.model)
+                logger.debug("Using BatchedInferencePipeline without batch_size (new API)")
+            except TypeError:
+                # Fallback to old API
+                self.batched_model = BatchedInferencePipeline(
+                    model=self.model,
+                    batch_size=self.batch_size
+                )
+                logger.debug(f"Using BatchedInferencePipeline with batch_size={self.batch_size} (old API)")
 
             self.model_type = 'ctranslate2'
             logger.info(f"✅ CTranslate2 model loaded - Batch size: {self.batch_size}, Workers: {settings.max_workers}")
@@ -237,14 +245,24 @@ class WhisperTranscriptionService:
 
                 logger.info(f"Loading HuggingFace model on {device} with {torch_dtype}")
 
-                # Load processor and model
+                # Load processor and model with memory optimization
                 processor = WhisperProcessor.from_pretrained(load_path)
                 model = WhisperForConditionalGeneration.from_pretrained(
                     load_path,
-                    torch_dtype=torch_dtype
+                    torch_dtype=torch_dtype,
+                    low_cpu_mem_usage=True,  # Reduce memory footprint during loading
                 )
                 model.to(device)
                 model.eval()
+
+                # Disable gradient computation to save memory
+                for param in model.parameters():
+                    param.requires_grad = False
+
+                # Clear CUDA cache if using GPU
+                if device == "cuda":
+                    torch.cuda.empty_cache()
+                    logger.info(f"CUDA memory allocated: {torch.cuda.memory_allocated(0) / 1024**3:.2f} GB")
 
                 # Store model components for dynamic pipeline creation
                 self.hf_model = model
