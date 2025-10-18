@@ -10,8 +10,8 @@ pydantic-settings
 
 # Faster Whisper dependencies (CTranslate2 format)
 faster-whisper>=1.0.0
-torch>=2.2.0
-ctranslate2>=4.0.0
+torch>=2.7.0
+ctranslate2>=4.5.0
 
 # HuggingFace transformers (for PyTorch model format support)
 transformers>=4.30.0

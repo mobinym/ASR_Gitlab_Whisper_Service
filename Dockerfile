@@ -1,7 +1,7 @@
 # Multi-stage build for Faster Whisper Service
 # Supports both GPU (CUDA) and CPU deployments
 
-FROM pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime AS base
+FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime AS base
 
 # Prevent Python from writing pyc files and buffering stdout/stderr
 ENV PYTHONDONTWRITEBYTECODE=1
