@@ -171,6 +171,10 @@ class WhisperTranscriptionService:
         self.model = None
         self.batched_model = None
         self.hf_pipeline = None  # HuggingFace pipeline fallback
+        self.hf_model = None  # HuggingFace model
+        self.hf_processor = None  # HuggingFace processor
+        self.hf_device = None  # Device for HuggingFace
+        self.hf_torch_dtype = None  # Dtype for HuggingFace
         self.model_type = None  # 'ctranslate2' or 'huggingface'
         self.preprocessor = AudioPreprocessor(
             target_sr=settings.target_sample_rate,
@@ -242,7 +246,13 @@ class WhisperTranscriptionService:
                 model.to(device)
                 model.eval()
 
-                # Create HuggingFace pipeline
+                # Store model components for dynamic pipeline creation
+                self.hf_model = model
+                self.hf_processor = processor
+                self.hf_device = device
+                self.hf_torch_dtype = torch_dtype
+
+                # Create initial HuggingFace pipeline (default chunk_length)
                 self.hf_pipeline = hf_pipeline(
                     "automatic-speech-recognition",
                     model=model,
@@ -250,7 +260,7 @@ class WhisperTranscriptionService:
                     feature_extractor=processor.feature_extractor,
                     device=device,
                     torch_dtype=torch_dtype,
-                    chunk_length_s=20,
+                    chunk_length_s=30,  # Default value
                     stride_length_s=5,
                     return_timestamps=True,
                 )
@@ -297,7 +307,7 @@ class WhisperTranscriptionService:
             )
         elif self.model_type == 'huggingface':
             result = await self._transcribe_huggingface(
-                processed_audio, language, task, beam_size
+                processed_audio, language, task, beam_size, chunk_length
             )
         else:
             raise RuntimeError("No model loaded")
@@ -374,7 +384,8 @@ class WhisperTranscriptionService:
         audio: np.ndarray,
         language: str,
         task: str,
-        beam_size: int
+        beam_size: int,
+        chunk_length: int = 30
     ) -> Dict[str, Any]:
         """Transcribe using HuggingFace transformers model."""
 
@@ -390,7 +401,8 @@ class WhisperTranscriptionService:
             audio,
             lang,
             task,
-            beam_size
+            beam_size,
+            chunk_length
         )
 
         transcription = result["text"].strip()
@@ -398,18 +410,45 @@ class WhisperTranscriptionService:
         # Extract segments if available
         segments_list = []
         if "chunks" in result:
-            for chunk in result["chunks"]:
+            for i, chunk in enumerate(result["chunks"]):
+                # Get timestamps, with fallback to estimation
+                ts = chunk.get("timestamp", [None, None])
+
+                if ts[0] is not None and ts[1] is not None:
+                    # Valid timestamps
+                    start_time = float(ts[0])
+                    end_time = float(ts[1])
+                else:
+                    # Estimate based on audio duration and chunk index
+                    audio_duration = len(audio) / settings.target_sample_rate
+                    num_chunks = len(result["chunks"])
+                    chunk_duration = audio_duration / num_chunks
+                    start_time = i * chunk_duration
+                    end_time = (i + 1) * chunk_duration
+
+                    logger.warning(f"Chunk {i}: Missing timestamps, estimated as {start_time:.2f}-{end_time:.2f}")
+
                 segments_list.append({
-                    "start": chunk["timestamp"][0] if chunk["timestamp"][0] is not None else 0.0,
-                    "end": chunk["timestamp"][1] if chunk["timestamp"][1] is not None else 0.0,
+                    "start": start_time,
+                    "end": end_time,
                     "text": chunk["text"]
                 })
 
+        # If no segments were created, create one for the full audio
+        if not segments_list:
+            audio_duration = len(audio) / settings.target_sample_rate
+            segments_list = [{
+                "start": 0.0,
+                "end": audio_duration,
+                "text": transcription
+            }]
+            logger.warning(f"No chunks returned by pipeline, created single segment: 0.0-{audio_duration:.2f}s")
+
         return {
             "transcription": transcription,
-            "segments": segments_list if segments_list else None,
+            "segments": segments_list,
             "language": language,
-            "chunks_processed": len(segments_list) if segments_list else 1
+            "chunks_processed": len(segments_list)
         }
 
     def _transcribe_sync_ctranslate2(
@@ -444,10 +483,30 @@ class WhisperTranscriptionService:
         audio: np.ndarray,
         language: str,
         task: str,
-        beam_size: int
+        beam_size: int,
+        chunk_length: int = 30
     ):
-        """Synchronous HuggingFace transcription."""
-        result = self.hf_pipeline(
+        """Synchronous HuggingFace transcription with dynamic chunk_length."""
+
+        # Create a pipeline with the specified chunk_length if different from default
+        # This avoids reloading the model
+        if chunk_length != 30 and hasattr(self, 'hf_model'):
+            logger.info(f"Using custom chunk_length: {chunk_length}s")
+            pipeline = hf_pipeline(
+                "automatic-speech-recognition",
+                model=self.hf_model,
+                tokenizer=self.hf_processor.tokenizer,
+                feature_extractor=self.hf_processor.feature_extractor,
+                device=self.hf_device,
+                torch_dtype=self.hf_torch_dtype,
+                chunk_length_s=chunk_length,
+                stride_length_s=min(5, chunk_length // 4),  # Adaptive stride
+                return_timestamps=True,
+            )
+        else:
+            pipeline = self.hf_pipeline
+
+        result = pipeline(
             audio,
             generate_kwargs={
                 "language": language,
