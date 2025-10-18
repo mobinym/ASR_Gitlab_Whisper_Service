@@ -262,7 +262,7 @@ class WhisperTranscriptionService:
                     torch_dtype=torch_dtype,
                     chunk_length_s=30,  # Default value
                     stride_length_s=5,
-                    return_timestamps=True,
+                    return_timestamps="word",  # Changed to "word" for chunking support
                 )
 
                 self.model_type = 'huggingface'
@@ -409,40 +409,66 @@ class WhisperTranscriptionService:
 
         # Extract segments if available
         segments_list = []
-        if "chunks" in result:
-            for i, chunk in enumerate(result["chunks"]):
-                # Get timestamps, with fallback to estimation
-                ts = chunk.get("timestamp", [None, None])
+        audio_duration = len(audio) / settings.target_sample_rate
 
-                if ts[0] is not None and ts[1] is not None:
-                    # Valid timestamps
-                    start_time = float(ts[0])
-                    end_time = float(ts[1])
-                else:
-                    # Estimate based on audio duration and chunk index
-                    audio_duration = len(audio) / settings.target_sample_rate
-                    num_chunks = len(result["chunks"])
-                    chunk_duration = audio_duration / num_chunks
-                    start_time = i * chunk_duration
-                    end_time = (i + 1) * chunk_duration
+        # Debug: log the structure of the result
+        logger.debug(f"Pipeline result keys: {result.keys()}")
 
-                    logger.warning(f"Chunk {i}: Missing timestamps, estimated as {start_time:.2f}-{end_time:.2f}")
+        if "chunks" in result and result["chunks"]:
+            chunks = result["chunks"]
+            logger.info(f"Received {len(chunks)} chunks from pipeline")
 
-                segments_list.append({
+            # For short audio (< chunk_length), combine all word-level chunks into one segment
+            # For long audio, group chunks into meaningful segments
+            if audio_duration < chunk_length and len(chunks) < 10:
+                # Short audio: combine all chunks into one segment with proper timestamps
+                first_ts = chunks[0].get("timestamp", [None, None])
+                last_ts = chunks[-1].get("timestamp", [None, None])
+
+                start_time = float(first_ts[0]) if first_ts[0] is not None else 0.0
+                end_time = float(last_ts[1]) if last_ts[1] is not None else audio_duration
+
+                segments_list = [{
                     "start": start_time,
                     "end": end_time,
-                    "text": chunk["text"]
-                })
+                    "text": transcription
+                }]
+                logger.info(f"Short audio ({audio_duration:.1f}s): combined {len(chunks)} word-level chunks into 1 segment")
+            else:
+                # Long audio: group word-level chunks into sentence-level segments
+                # Group by chunk_length intervals
+                current_segment = {"text": "", "start": None, "end": None}
 
-        # If no segments were created, create one for the full audio
+                for i, chunk in enumerate(chunks):
+                    ts = chunk.get("timestamp", [None, None])
+                    text = chunk.get("text", "")
+
+                    if current_segment["start"] is None:
+                        current_segment["start"] = float(ts[0]) if ts[0] is not None else 0.0
+
+                    current_segment["text"] += text
+                    current_segment["end"] = float(ts[1]) if ts[1] is not None else audio_duration
+
+                    # Create a new segment every ~30 words or at the end
+                    if (i + 1) % 30 == 0 or i == len(chunks) - 1:
+                        if current_segment["text"].strip():
+                            segments_list.append({
+                                "start": current_segment["start"],
+                                "end": current_segment["end"],
+                                "text": current_segment["text"].strip()
+                            })
+                        current_segment = {"text": "", "start": None, "end": None}
+
+                logger.info(f"Long audio ({audio_duration:.1f}s): grouped {len(chunks)} word-level chunks into {len(segments_list)} segments")
+
+        # If no segments were created, create one for the full audio as fallback
         if not segments_list:
-            audio_duration = len(audio) / settings.target_sample_rate
+            logger.warning(f"No chunks in pipeline result, creating single segment for full audio")
             segments_list = [{
                 "start": 0.0,
                 "end": audio_duration,
                 "text": transcription
             }]
-            logger.warning(f"No chunks returned by pipeline, created single segment: 0.0-{audio_duration:.2f}s")
 
         return {
             "transcription": transcription,
@@ -501,7 +527,7 @@ class WhisperTranscriptionService:
                 torch_dtype=self.hf_torch_dtype,
                 chunk_length_s=chunk_length,
                 stride_length_s=min(5, chunk_length // 4),  # Adaptive stride
-                return_timestamps=True,
+                return_timestamps="word",  # Use "word" for chunking support
             )
         else:
             pipeline = self.hf_pipeline
@@ -513,7 +539,7 @@ class WhisperTranscriptionService:
                 "task": task,
                 "num_beams": beam_size,
             },
-            return_timestamps=True
+            return_timestamps="word"  # Use "word" to get chunks
         )
 
         return result
@@ -569,7 +595,8 @@ class WhisperTranscriptionService:
                 processed_audio,
                 lang,
                 task,
-                beam_size
+                beam_size,
+                30  # chunk_length default
             )
 
             # Return as single chunk
