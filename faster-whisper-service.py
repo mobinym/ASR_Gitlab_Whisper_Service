@@ -6,6 +6,7 @@ import numpy as np
 import soundfile as sf
 import uvicorn
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from faster_whisper import WhisperModel, BatchedInferencePipeline
 from typing import List, Optional, Dict, Any
@@ -680,6 +681,15 @@ app = FastAPI(
     description="Fast, batched speech-to-text service using Faster Whisper with advanced chunking",
     version="2.0.0",
     lifespan=lifespan
+)
+
+# Add CORS middleware to allow cross-origin requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, specify actual origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 

@@ -1,0 +1,7 @@
+# Requirements for Gradio Live Transcription Interface
+# Install with: pip install -r requirements-gradio.txt
+
+gradio>=4.0.0
+requests>=2.31.0
+numpy>=1.24.0
+soundfile>=0.12.0
