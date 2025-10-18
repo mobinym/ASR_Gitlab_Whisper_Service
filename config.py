@@ -25,9 +25,9 @@ class Settings(BaseSettings):
         default="cuda",
         description="Device to run inference on"
     )
-    compute_type: Literal["float16", "int8_float16", "int8", "float32"] = Field(
+    compute_type: Literal["float32", "bfloat16", "float16", "int8_float16", "int8"] = Field(
         default="float16",
-        description="Compute precision type"
+        description="Compute precision type (float32/bfloat16=best accuracy, int8=fastest)"
     )
 
     # Performance Configuration

@@ -45,6 +45,8 @@ services:
       - VAD_FILTER=true
       - BEAM_SIZE=5
       - LOG_LEVEL=INFO
+      # Fix cuDNN library loading for CTranslate2
+      - LD_LIBRARY_PATH=/opt/conda/lib/python3.11/site-packages/nvidia/cudnn/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
 
     # Health check
     healthcheck:
@@ -119,6 +121,74 @@ services:
     # Comment this out to run CPU service
     profiles:
       - cpu
+
+  # High-Accuracy GPU Profile (optimized for best transcription quality)
+  whisper-gpu-accuracy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PIP_INDEX_URL: http://nexus.aiopt.io:8081/repository/repo-pypi/simple/
+        PIP_TRUSTED_HOST: nexus.aiopt.io
+    image: whisper-service:gpu
+    container_name: whisper-service-gpu-accuracy
+    restart: unless-stopped
+
+    # GPU support
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    # Port mapping
+    ports:
+      - "16001:8000"
+
+    # Volume mounts
+    volumes:
+      - /data/docker/whisper/data/models:/data/models:ro
+
+    # Environment variables optimized for ACCURACY
+    environment:
+      - DEFAULT_MODEL_NAME=203-final-ct2
+      - MODELS_BASE_DIR=/data/models
+      - DEVICE=cuda
+      # Use bfloat16 for better accuracy (requires Ampere+ GPU) or float32 for best accuracy
+      - COMPUTE_TYPE=bfloat16
+      - MAX_WORKERS=2
+      - BATCH_SIZE=8
+      - VAD_FILTER=true
+      # Higher beam size for better accuracy
+      - BEAM_SIZE=10
+      - LOG_LEVEL=INFO
+      # Fix cuDNN library loading
+      - LD_LIBRARY_PATH=/opt/conda/lib/python3.11/site-packages/nvidia/cudnn/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    # Network
+    networks:
+      - whisper-net
+
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Activate with: docker-compose --profile accuracy up -d
+    profiles:
+      - accuracy
 
 networks:
   whisper-net:
