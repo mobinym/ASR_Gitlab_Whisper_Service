@@ -1,10 +1,21 @@
 fastapi
-uvicorn
+uvicorn[standard]
 librosa
 numpy
 soundfile
-transformers
 python-dotenv
-torch>=2.2.0
 python-multipart
 resampy
+pydantic-settings
+
+# Faster Whisper dependencies (CTranslate2 format)
+faster-whisper>=1.0.0
+torch>=2.2.0
+ctranslate2>=4.0.0
+
+# HuggingFace transformers (for PyTorch model format support)
+transformers>=4.30.0
+
+# Optional: for GPU acceleration
+# nvidia-cublas-cu12
+# nvidia-cudnn-cu12

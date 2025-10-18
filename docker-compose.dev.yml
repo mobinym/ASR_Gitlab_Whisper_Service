@@ -1,0 +1,48 @@
+# Development docker-compose configuration
+# Use: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+version: '3.8'
+
+services:
+  whisper-gpu:
+    # Mount source code for live development
+    volumes:
+      - .:/app:rw
+      - D:/data/models:/data/models:ro
+
+    # Override environment for development
+    environment:
+      - LOG_LEVEL=DEBUG
+      - RELOAD=true
+
+    # Development command with auto-reload
+    command: >
+      bash -c "pip install watchdog &&
+               uvicorn faster-whisper-service:app
+               --host 0.0.0.0
+               --port 8000
+               --reload
+               --log-level debug"
+
+    # Development port
+    ports:
+      - "8000:8000"
+
+  whisper-cpu:
+    volumes:
+      - .:/app:rw
+      - D:/data/models:/data/models:ro
+
+    environment:
+      - LOG_LEVEL=DEBUG
+
+    command: >
+      bash -c "pip install watchdog &&
+               uvicorn faster-whisper-service:app
+               --host 0.0.0.0
+               --port 8000
+               --reload
+               --log-level debug"
+
+    ports:
+      - "8001:8000"
