@@ -294,6 +294,26 @@ class WhisperTranscriptionService:
         else:
             raise RuntimeError(f"Failed to load CTranslate2 model and transformers library not available for fallback")
 
+    def _convert_audio_to_wav(self, input_path: str) -> str:
+        """Convert audio file to WAV format using librosa (handles webm, mp3, etc.)"""
+        try:
+            # Try loading with librosa (supports many formats via ffmpeg)
+            audio, sr = librosa.load(input_path, sr=None, mono=False)
+
+            # Create temp WAV file
+            temp_wav = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+            temp_wav.close()
+
+            # Save as WAV
+            sf.write(temp_wav.name, audio.T if len(audio.shape) > 1 else audio, sr)
+
+            logger.info(f"Converted {input_path} to WAV format")
+            return temp_wav.name
+
+        except Exception as e:
+            logger.error(f"Audio conversion failed: {e}")
+            raise
+
     async def transcribe(
         self,
         audio_path: str,
@@ -312,33 +332,50 @@ class WhisperTranscriptionService:
         beam_size = beam_size if beam_size is not None else settings.beam_size
         vad_filter = vad_filter if vad_filter is not None else settings.vad_filter
 
-        # Load and preprocess audio
-        audio, sr = sf.read(audio_path)
-        processed_audio = self.preprocessor.process(audio, original_sr=sr)
-        duration = len(processed_audio) / settings.target_sample_rate
+        # Convert to WAV if needed (for WebM, MP3, etc.)
+        converted_path = None
+        try:
+            # Try reading directly first
+            audio, sr = sf.read(audio_path)
+        except Exception as e:
+            logger.warning(f"Failed to read {audio_path} directly, converting to WAV: {e}")
+            converted_path = self._convert_audio_to_wav(audio_path)
+            audio, sr = sf.read(converted_path)
 
-        logger.info(f"Transcribing {duration:.2f}s audio with {self.model_type} model")
+        try:
+            processed_audio = self.preprocessor.process(audio, original_sr=sr)
+            duration = len(processed_audio) / settings.target_sample_rate
 
-        # Use appropriate transcription method based on model type
-        if self.model_type == 'ctranslate2':
-            result = await self._transcribe_ctranslate2(
-                processed_audio, language, task, beam_size, vad_filter, word_timestamps
-            )
-        elif self.model_type == 'huggingface':
-            result = await self._transcribe_huggingface(
-                processed_audio, language, task, beam_size, chunk_length
-            )
-        else:
-            raise RuntimeError("No model loaded")
+            logger.info(f"Transcribing {duration:.2f}s audio with {self.model_type} model")
 
-        result["duration"] = duration
-        result["processing_time"] = (datetime.now() - start_time).total_seconds()
-        result["model_used"] = self.model_name
-        result["model_type"] = self.model_type
+            # Use appropriate transcription method based on model type
+            if self.model_type == 'ctranslate2':
+                result = await self._transcribe_ctranslate2(
+                    processed_audio, language, task, beam_size, vad_filter, word_timestamps
+                )
+            elif self.model_type == 'huggingface':
+                result = await self._transcribe_huggingface(
+                    processed_audio, language, task, beam_size, chunk_length
+                )
+            else:
+                raise RuntimeError("No model loaded")
 
-        logger.info(f"✅ Transcription completed in {result['processing_time']:.2f}s")
+            result["duration"] = duration
+            result["processing_time"] = (datetime.now() - start_time).total_seconds()
+            result["model_used"] = self.model_name
+            result["model_type"] = self.model_type
 
-        return result
+            logger.info(f"✅ Transcription completed in {result['processing_time']:.2f}s")
+
+            return result
+
+        finally:
+            # Cleanup converted file
+            if converted_path and os.path.exists(converted_path):
+                try:
+                    os.unlink(converted_path)
+                except:
+                    pass
 
     async def _transcribe_ctranslate2(
         self,
@@ -506,6 +543,8 @@ class WhisperTranscriptionService:
         word_timestamps: bool
     ):
         """Synchronous CTranslate2 transcription using batched pipeline."""
+        initial_prompt = "این یک متن فارسی است." if language == "fa" else None
+        initial_prompt = None
         segments, info = self.batched_model.transcribe(
             audio,
             language=language,
@@ -513,12 +552,17 @@ class WhisperTranscriptionService:
             beam_size=beam_size,
             vad_filter=vad_filter,
             word_timestamps=word_timestamps,
-            condition_on_previous_text=True,
+            condition_on_previous_text=True, # تغییر به False
             temperature=0.0,
             compression_ratio_threshold=2.4,
             log_prob_threshold=-1.0,
             no_speech_threshold=0.6,
-            initial_prompt=None,
+            initial_prompt=initial_prompt,
+                    # پارامترهای اضافی اگر پشتیبانی می‌شوند:
+            # repetition_penalty=1.1,  # جلوگیری از تکرار
+            # no_repeat_ngram_size=3,  # عدم تکرار 3-gram
+            # patience=1.5,  # بهبود کیفیت
+            # length_penalty=0.6
         )
 
         return segments, info
@@ -577,53 +621,70 @@ class WhisperTranscriptionService:
         beam_size = beam_size if beam_size is not None else settings.beam_size
         vad_filter = vad_filter if vad_filter is not None else settings.vad_filter
 
-        audio, sr = sf.read(audio_path)
-        processed_audio = self.preprocessor.process(audio, original_sr=sr)
+        # Convert to WAV if needed
+        converted_path = None
+        try:
+            audio, sr = sf.read(audio_path)
+        except Exception as e:
+            logger.warning(f"Failed to read {audio_path} directly, converting to WAV: {e}")
+            converted_path = self._convert_audio_to_wav(audio_path)
+            audio, sr = sf.read(converted_path)
 
-        # Only CTranslate2 supports true streaming
-        if self.model_type == 'ctranslate2':
-            loop = asyncio.get_event_loop()
-            segments, info = await loop.run_in_executor(
-                self.executor,
-                self._transcribe_sync_ctranslate2,
-                processed_audio,
-                language,
-                task,
-                beam_size,
-                vad_filter,
-                False
-            )
+        try:
+            processed_audio = self.preprocessor.process(audio, original_sr=sr)
 
-            # Stream segments as JSON
-            for segment in segments:
+            # Only CTranslate2 supports true streaming
+            if self.model_type == 'ctranslate2':
+                loop = asyncio.get_event_loop()
+                segments, _ = await loop.run_in_executor(
+                    self.executor,
+                    self._transcribe_sync_ctranslate2,
+                    processed_audio,
+                    language,
+                    task,
+                    beam_size,
+                    vad_filter,
+                    False
+                )
+
+                # Stream segments as JSON
+                for segment in segments:
+                    yield json.dumps({
+                        "start": segment.start,
+                        "end": segment.end,
+                        "text": segment.text
+                    }) + "\n"
+
+            elif self.model_type == 'huggingface':
+                # HuggingFace doesn't stream, return all at once
+                lang_map = {"fa": "persian", "en": "english", "ar": "arabic"}
+                lang = lang_map.get(language, language)
+
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(
+                    self.executor,
+                    self._transcribe_sync_huggingface,
+                    processed_audio,
+                    lang,
+                    task,
+                    beam_size,
+                    30  # chunk_length default
+                )
+
+                # Return as single chunk
                 yield json.dumps({
-                    "start": segment.start,
-                    "end": segment.end,
-                    "text": segment.text
+                    "start": 0.0,
+                    "end": len(processed_audio) / settings.target_sample_rate,
+                    "text": result["text"].strip()
                 }) + "\n"
 
-        elif self.model_type == 'huggingface':
-            # HuggingFace doesn't stream, return all at once
-            lang_map = {"fa": "persian", "en": "english", "ar": "arabic"}
-            lang = lang_map.get(language, language)
-
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                self.executor,
-                self._transcribe_sync_huggingface,
-                processed_audio,
-                lang,
-                task,
-                beam_size,
-                30  # chunk_length default
-            )
-
-            # Return as single chunk
-            yield json.dumps({
-                "start": 0.0,
-                "end": len(processed_audio) / settings.target_sample_rate,
-                "text": result["text"].strip()
-            }) + "\n"
+        finally:
+            # Cleanup converted file
+            if converted_path and os.path.exists(converted_path):
+                try:
+                    os.unlink(converted_path)
+                except:
+                    pass
 
 
 # Application state
