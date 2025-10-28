@@ -59,9 +59,12 @@ class TranscriptionResponse(BaseModel):
     model_used: str
     chunks_processed: int
 
-
+# =============================================================================
+# >>>>> شروع تغییر: کد پیش‌پردازش مدیر کامنت شد <<<<<
+# =============================================================================
+"""
 class AudioPreprocessor:
-    """Advanced audio preprocessing for better transcription quality."""
+    '''Advanced audio preprocessing for better transcription quality.'''
 
     def __init__(self, target_sr=16000, trim_top_db=25, normalization_target_db=-23.0):
         self.target_sr = target_sr
@@ -129,7 +132,7 @@ class AudioPreprocessor:
             return audio
 
     def process(self, audio_array: np.ndarray, original_sr: int) -> np.ndarray:
-        """Full preprocessing pipeline."""
+        '''Full preprocessing pipeline.'''
         # Convert to mono if needed
         if len(audio_array.shape) > 1:
             if audio_array.shape[0] < audio_array.shape[1]:
@@ -153,6 +156,105 @@ class AudioPreprocessor:
         normalized = self.adaptive_normalization(denoised)
 
         return normalized.astype(np.float32)
+"""
+# =============================================================================
+# >>>>> شروع تغییر: کد پیش‌پردازش شما اضافه شد <<<<<
+# =============================================================================
+class AudioPreprocessor:
+    def __init__(self, target_sr=16000, trim_top_db=25, normalization_target_db=-23.0):
+        self.target_sr = target_sr
+        self.trim_top_db = trim_top_db
+        self.normalization_target_db = normalization_target_db
+        logger.info("Advanced AudioPreprocessor initialized (User Version).")
+
+    def advanced_trim_silence(self, audio: np.ndarray) -> np.ndarray:
+        if audio.size == 0: return audio
+        try:
+            # پارامترهای شما
+            trimmed, _ = librosa.effects.trim(audio, top_db=self.trim_top_db, frame_length=1024, hop_length=256)
+            return trimmed
+        except Exception:
+            logger.warning("Trim silence failed, returning original audio")
+            return audio
+
+    def spectral_noise_reduction(self, audio: np.ndarray) -> np.ndarray:
+        if audio.size == 0: return audio
+        try:
+            # پارامترهای شما
+            D = librosa.stft(audio) # n_fft و hop_length پیش‌فرض
+            magnitude, phase = np.abs(D), np.angle(D)
+            energy = np.mean(magnitude, axis=0)
+            # استفاده از np.percentile(energy, 20) و ضریب 2.0 طبق کد شما
+            noise_profile = np.mean(magnitude[:, energy < np.percentile(energy, 20)], axis=1, keepdims=True)
+            if np.any(noise_profile) and not np.isnan(noise_profile).all():
+                magnitude_clean = np.maximum(magnitude - 2.0 * noise_profile, 0)
+                audio_clean = librosa.istft(magnitude_clean * np.exp(1j * phase), length=len(audio))
+                return audio_clean.astype(np.float32)
+            return audio
+        except Exception:
+            logger.warning("Noise reduction failed, returning original audio")
+            return audio
+
+    def dynamic_range_compression(self, audio: np.ndarray) -> np.ndarray:
+        # تابع اختصاصی از کد شما
+        if audio.size == 0: return audio
+        try:
+            threshold, ratio = 0.3, 3.0
+            above_threshold_indices = np.where(np.abs(audio) > threshold)[0]
+            if above_threshold_indices.size > 0:
+                audio[above_threshold_indices] = np.sign(audio[above_threshold_indices]) * (threshold + (np.abs(audio[above_threshold_indices]) - threshold) / ratio)
+            return audio
+        except Exception:
+            logger.warning("Dynamic range compression failed, returning original audio")
+            return audio
+
+    def adaptive_normalization(self, audio: np.ndarray) -> np.ndarray:
+        if audio.size == 0: return audio
+        try:
+            rms = np.sqrt(np.mean(audio.astype(np.float64)**2))
+            if rms < 1e-7: return audio
+            peak = np.max(np.abs(audio))
+            if peak == 0: return audio
+            target_rms = 10**(self.normalization_target_db / 20)
+            rms_gain = target_rms / rms
+            # استفاده از 0.98 طبق کد شما
+            peak_gain = 0.98 / peak
+            final_gain = min(rms_gain, peak_gain, 10.0)
+            return (audio * final_gain).astype(np.float32)
+        except Exception:
+            logger.warning("Normalization failed, returning original audio")
+            return audio
+    
+    def process(self, audio_array: np.ndarray, original_sr: int) -> np.ndarray:
+        """Runs the full preprocessing pipeline (User Version)."""
+        # بررسی مونو بودن از کد شما
+        if len(audio_array.shape) > 1 and audio_array.shape[1] > 1:
+            audio_array = librosa.to_mono(audio_array.T)
+            logger.info("Converted stereo audio to mono.")
+        # اگر در کد مدیر، استریو به شکل دیگری بود، این بخش آن را مدیریت می‌کند
+        elif len(audio_array.shape) > 1 and audio_array.shape[0] > 1:
+             if audio_array.shape[0] < audio_array.shape[1]:
+                 audio_array = audio_array.T
+             audio_array = librosa.to_mono(audio_array.T)
+             logger.info("Converted stereo audio to mono (Manager's format check).")
+
+
+        if original_sr != self.target_sr:
+            # استفاده از 'kaiser_best' طبق کد شما
+            audio_array = librosa.resample(y=audio_array, orig_sr=original_sr, target_sr=self.target_sr, res_type='kaiser_best')
+            logger.info(f"Resampled audio from {original_sr}Hz to {self.target_sr}Hz.")
+        
+        # پایپ‌لاین کامل شما شامل فشرده‌سازی
+        trimmed = self.advanced_trim_silence(audio_array)
+        denoised = self.spectral_noise_reduction(trimmed)
+        compressed = self.dynamic_range_compression(denoised) # مرحله اضافه شده شما
+        normalized = self.adaptive_normalization(compressed)
+        
+        logger.info("Advanced audio processing complete (User Version).")
+        return normalized.astype(np.float32)
+# =============================================================================
+# >>>>> پایان تغییر <<<<<
+# =============================================================================
 
 
 class WhisperTranscriptionService:
@@ -177,6 +279,8 @@ class WhisperTranscriptionService:
         self.hf_device = None  # Device for HuggingFace
         self.hf_torch_dtype = None  # Dtype for HuggingFace
         self.model_type = None  # 'ctranslate2' or 'huggingface'
+        
+        # این بخش بدون تغییر باقی می‌ماند اما اکنون از کلاس AudioPreprocessor شما استفاده خواهد کرد
         self.preprocessor = AudioPreprocessor(
             target_sr=settings.target_sample_rate,
             trim_top_db=settings.trim_top_db,
@@ -246,13 +350,29 @@ class WhisperTranscriptionService:
 
                 logger.info(f"Loading HuggingFace model on {device} with {torch_dtype}")
 
-                # Load processor and model with memory optimization
+                # Load processor and model
                 processor = WhisperProcessor.from_pretrained(load_path)
+
+                # =============================================================================
+                # >>>>> شروع تغییر: بخش DTYPE مطابق کد شما (حذف low_cpu_mem_usage) <<<<<
+                # =============================================================================
+                """
+                # کد اصلی مدیر
                 model = WhisperForConditionalGeneration.from_pretrained(
                     load_path,
                     torch_dtype=torch_dtype,
                     low_cpu_mem_usage=True,  # Reduce memory footprint during loading
                 )
+                """
+                # کد جایگزین شده (بر اساس کد شما)
+                model = WhisperForConditionalGeneration.from_pretrained(
+                    load_path,
+                    torch_dtype=torch_dtype
+                )
+                # =============================================================================
+                # >>>>> پایان تغییر <<<<<
+                # =============================================================================
+                
                 model.to(device)
                 model.eval()
 
@@ -343,6 +463,7 @@ class WhisperTranscriptionService:
             audio, sr = sf.read(converted_path)
 
         try:
+            # اینجا اکنون از کلاس AudioPreprocessor شما استفاده می‌شود
             processed_audio = self.preprocessor.process(audio, original_sr=sr)
             duration = len(processed_audio) / settings.target_sample_rate
 
@@ -558,7 +679,7 @@ class WhisperTranscriptionService:
             log_prob_threshold=-1.0,
             no_speech_threshold=0.6,
             initial_prompt=initial_prompt,
-                    # پارامترهای اضافی اگر پشتیبانی می‌شوند:
+                  # پارامترهای اضافی اگر پشتیبانی می‌شوند:
             # repetition_penalty=1.1,  # جلوگیری از تکرار
             # no_repeat_ngram_size=3,  # عدم تکرار 3-gram
             # patience=1.5,  # بهبود کیفیت
@@ -631,6 +752,7 @@ class WhisperTranscriptionService:
             audio, sr = sf.read(converted_path)
 
         try:
+            # اینجا اکنون از کلاس AudioPreprocessor شما استفاده می‌شود
             processed_audio = self.preprocessor.process(audio, original_sr=sr)
 
             # Only CTranslate2 supports true streaming
